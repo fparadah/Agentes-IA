@@ -1,0 +1,12 @@
+# Dependencias del sistema de agenda clinica
+# Instalar con: pip install -r requirements.txt
+
+# API de Anthropic (Claude)
+anthropic>=0.40.0
+
+# Tests
+pytest>=8.0.0
+pytest-cov>=5.0.0
+
+# Utilidades (opcionales, para futuras integraciones)
+python-dotenv>=1.0.0
