@@ -1,37 +1,52 @@
 """
 Manejador de mensajes entrantes de WhatsApp.
 
-Simula el webhook que en produccion recibiria los mensajes
-de los pacientes desde WhatsApp Business API.
+Procesa mensajes de pacientes desde WhatsApp Business API (Meta Cloud API).
+Clasifica la intencion del mensaje y ejecuta la accion correspondiente.
 
 Dos tipos de mensajes entrantes:
   A) Respuestas a confirmaciones (SI / NO / CAMBIAR)
-  B) Conversaciones nuevas (el paciente escribe sin contexto previo)
+  B) Conversaciones nuevas — pasa al agente Rosita
 
-En produccion, este modulo sera un endpoint HTTP (FastAPI/Flask)
-que Meta llamara cada vez que un paciente escribe al numero de WhatsApp.
+En produccion, este modulo es llamado por src/api.py (FastAPI).
 
 Ejecutar simulacion:
   python -m src.webhook
 """
 
-import json
+import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from src import database as db
 from src.models import EstadoCita, TipoContacto
 from src.tools import herramienta_enviar_mensaje_paciente
 
+# Minutos sin actividad para expirar la sesion de conversacion
+SESSION_TTL_MINUTOS = 30
 
 # ---------------------------------------------------------------------------
-# Parser de respuestas simples (confirmacion/cancelacion)
+# Clasificador de intenciones
 # ---------------------------------------------------------------------------
 
-RESPUESTAS_CONFIRMAR = {"si", "sí", "si!", "sí!", "confirmo", "confirmado", "ok", "dale", "claro", "voy"}
-RESPUESTAS_CANCELAR = {"no", "no puedo", "cancela", "cancelar", "no voy"}
-RESPUESTAS_CAMBIAR = {"cambiar", "cambio", "reagendar", "reagenda", "otro dia", "otro horario"}
+# Keywords expandidos con expresiones chilenas comunes
+RESPUESTAS_CONFIRMAR = {
+    "si", "sí", "si!", "sí!", "confirmo", "confirmado", "ok", "dale",
+    "claro", "voy", "ya", "oks", "sip", "yap", "okey", "de acuerdo",
+    "ahi estare", "ahí estaré", "ahi voy", "ahí voy", "por supuesto",
+    "por su puesto", "con gusto", "va", "ya pues", "perfecto",
+}
+RESPUESTAS_CANCELAR = {
+    "no", "no puedo", "cancela", "cancelar", "no voy", "nop",
+    "nope", "negativo", "no voy a poder", "no puedo ir",
+    "imposible", "no me es posible",
+}
+RESPUESTAS_CAMBIAR = {
+    "cambiar", "cambio", "reagendar", "reagenda", "otro dia", "otro horario",
+    "cambiar hora", "cambiar fecha", "mover", "posponer", "postergar",
+    "otro momento", "diferente dia", "diferente fecha",
+}
 
 
 def clasificar_respuesta(texto: str) -> str:
@@ -66,26 +81,53 @@ class ManejadorWhatsApp:
     """
     Procesa mensajes entrantes de pacientes.
 
-    En produccion:
-    - Recibe el payload JSON de Meta WhatsApp Cloud API
-    - Identifica al paciente por numero de telefono
-    - Si es respuesta a confirmacion: procesa directamente
-    - Si es mensaje libre: pasa al agente conversacional
+    Mantiene una sesion de conversacion por numero de telefono (TTL: 30 min)
+    para que el contexto de la conversacion persista entre mensajes.
+
+    Uso en produccion: instanciar UNA SOLA VEZ a nivel de aplicacion
+    (no por request) para que el diccionario de sesiones persista.
+
+    Ejemplo en api.py:
+        manejador = ManejadorWhatsApp()   # modulo-level singleton
     """
 
     def __init__(self, usar_agente: bool = True):
         self.usar_agente = usar_agente
-        self._agente = None  # lazy init
+        # Sesiones por telefono: {telefono: (AgenteAgenda, ultimo_uso)}
+        self._sesiones: dict[str, tuple] = {}
 
-    def _get_agente(self):
-        if self._agente is None:
-            import os
+    def _get_agente(self, telefono: str):
+        """
+        Obtiene o crea la sesion del agente para un numero de telefono.
+        Limpia automaticamente sesiones inactivas por mas de SESSION_TTL_MINUTOS.
+        """
+        ahora = datetime.now()
+
+        # Limpiar sesiones expiradas
+        expiradas = [
+            tel for tel, (_, ultimo_uso) in self._sesiones.items()
+            if ahora - ultimo_uso > timedelta(minutes=SESSION_TTL_MINUTOS)
+        ]
+        for tel in expiradas:
+            del self._sesiones[tel]
+
+        # Crear nueva sesion o reutilizar existente
+        if telefono not in self._sesiones:
             from src.agent import AgenteAgenda
-            self._agente = AgenteAgenda(
+            agente = AgenteAgenda(
                 api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
                 modo_debug=False,
             )
-        return self._agente
+            self._sesiones[telefono] = (agente, ahora)
+        else:
+            agente, _ = self._sesiones[telefono]
+            self._sesiones[telefono] = (agente, ahora)  # renovar timestamp
+
+        return agente
+
+    def limpiar_sesion(self, telefono: str) -> None:
+        """Elimina la sesion de un paciente (ej: al confirmar o cancelar)."""
+        self._sesiones.pop(telefono, None)
 
     def procesar_mensaje(
         self,
@@ -147,7 +189,7 @@ class ManejadorWhatsApp:
             return self._manejar_solicitud_cambio(paciente, citas_activas[0])
 
         # 5. Mensaje libre: pasar al agente conversacional
-        return self._manejar_conversacion_libre(paciente, texto, citas_activas)
+        return self._manejar_conversacion_libre(paciente, texto, citas_activas, telefono)
 
     def _manejar_confirmacion(self, paciente, cita) -> dict:
         """Paciente confirma su cita."""
@@ -166,9 +208,11 @@ class ManejadorWhatsApp:
             cita_id=cita.id,
             paciente_id=paciente.id,
             canal=TipoContacto.WHATSAPP,
-            mensaje=f"[RESPUESTA PACIENTE] SI - confirmo",
+            mensaje="[RESPUESTA PACIENTE] SI - confirmo",
             respuesta="SI",
         )
+        # La cita quedó resuelta: limpiar sesión para liberar memoria
+        self.limpiar_sesion(paciente.telefono)
 
         return {
             "accion": "cita_confirmada",
@@ -195,9 +239,10 @@ class ManejadorWhatsApp:
             cita_id=cita.id,
             paciente_id=paciente.id,
             canal=TipoContacto.WHATSAPP,
-            mensaje=f"[RESPUESTA PACIENTE] NO - cancela",
+            mensaje="[RESPUESTA PACIENTE] NO - cancela",
             respuesta="NO",
         )
+        self.limpiar_sesion(paciente.telefono)
 
         return {
             "accion": "cita_cancelada",
@@ -228,26 +273,26 @@ class ManejadorWhatsApp:
             "nota": "Paciente en flujo de reagendamiento - requiere conversacion con agente",
         }
 
-    def _manejar_conversacion_libre(self, paciente, texto, citas_activas) -> dict:
+    def _manejar_conversacion_libre(self, paciente, texto, citas_activas, telefono: str = "") -> dict:
         """
-        Mensaje libre o paciente nuevo. Pasa al agente conversacional.
-        En produccion, mantendria sesion por numero de telefono.
+        Mensaje libre. Pasa al agente Rosita con sesion por telefono.
+        Si no hay API key disponible, responde con informacion basica.
         """
-        if not self.usar_agente:
-            # Modo sin agente (para pruebas de webhook sin API key)
+        if not self.usar_agente or not os.environ.get("ANTHROPIC_API_KEY"):
             if citas_activas:
                 cita = citas_activas[0]
                 medico = db.obtener_medico(cita.medico_id)
                 respuesta = (
-                    f"Hola {paciente.nombre}! Tienes una cita agendada con "
-                    f"{medico.nombre_completo if medico else 'el medico'} "
+                    f"Hola {paciente.nombre}! Tienes una cita con "
+                    f"{medico.nombre_completo if medico else 'tu medico'} "
                     f"el {cita.fecha_hora_display}. "
-                    f"Responde SI para confirmar, NO para cancelar, o CAMBIAR si necesitas otro horario."
+                    f"Responde SI para confirmar, NO para cancelar, "
+                    f"o CAMBIAR si necesitas otro horario."
                 )
             else:
                 respuesta = (
                     f"Hola {paciente.nombre}! No encontramos citas activas para ti. "
-                    f"Si quieres agendar una hora, escribenos y te ayudamos."
+                    f"Escríbenos o llama a recepcion para agendar una hora."
                 )
             return {
                 "accion": "mensaje_libre_sin_agente",
@@ -255,11 +300,26 @@ class ManejadorWhatsApp:
                 "respuesta": respuesta,
             }
 
-        # Usar agente conversacional (requiere ANTHROPIC_API_KEY)
+        # Usar agente Rosita con sesion persistente por telefono
         try:
-            agente = self._get_agente()
-            contexto = f"[Paciente: {paciente.nombre_completo}, Tel: {paciente.telefono}]\n{texto}"
-            respuesta, herramientas = agente.responder(contexto)
+            agente = self._get_agente(telefono or paciente.telefono)
+            # Dar contexto del paciente si es el primer mensaje de la sesion
+            if len(agente.historial) == 0 and citas_activas:
+                cita = citas_activas[0]
+                medico = db.obtener_medico(cita.medico_id)
+                contexto_inicial = (
+                    f"[CONTEXTO INTERNO - no mostrar al paciente] "
+                    f"El paciente es {paciente.nombre_completo}, telefono {paciente.telefono}. "
+                    f"Tiene una cita proxima: [{cita.id}] con {medico.nombre_completo if medico else 'medico'} "
+                    f"el {cita.fecha_hora_display}, estado: {cita.estado.value}."
+                )
+                agente.historial.append({"role": "user", "content": contexto_inicial})
+                agente.historial.append({
+                    "role": "assistant",
+                    "content": "Entendido, tengo el contexto del paciente."
+                })
+
+            respuesta, herramientas = agente.responder(texto)
 
             if citas_activas:
                 herramienta_enviar_mensaje_paciente(citas_activas[0].id, respuesta)
@@ -272,8 +332,8 @@ class ManejadorWhatsApp:
             }
         except Exception as e:
             respuesta = (
-                f"Hola {paciente.nombre}! En este momento no podemos procesar tu mensaje. "
-                f"Por favor llama a recepcion o intentalo mas tarde. Disculpa las molestias!"
+                f"Hola {paciente.nombre}! En este momento no puedo procesar tu mensaje. "
+                f"Por favor llama a recepcion. Disculpa las molestias!"
             )
             return {
                 "accion": "error_agente",
