@@ -1,0 +1,91 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    // ---------------------------------------------------------------
+    // Chat con Rosita (terminal interactivo)
+    // ---------------------------------------------------------------
+    {
+      "name": "Chat con Rosita",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "main",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env"
+    },
+
+    // ---------------------------------------------------------------
+    // Cargar datos de prueba (seed)
+    // ---------------------------------------------------------------
+    {
+      "name": "Cargar datos de prueba",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "main",
+      "args": ["--seed"],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env"
+    },
+
+    // ---------------------------------------------------------------
+    // Scheduler — enviar confirmaciones del dia siguiente
+    // ---------------------------------------------------------------
+    {
+      "name": "Scheduler — confirmaciones manana",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "main",
+      "args": ["--schedule"],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env"
+    },
+
+    // ---------------------------------------------------------------
+    // Simulacion webhook (mensajes entrantes de pacientes)
+    // ---------------------------------------------------------------
+    {
+      "name": "Simular webhook (mensajes entrantes)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "src.webhook",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env"
+    },
+
+    // ---------------------------------------------------------------
+    // Servidor FastAPI (produccion/pruebas de webhook real)
+    // ---------------------------------------------------------------
+    {
+      "name": "Servidor FastAPI (uvicorn)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "src.api:app",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--reload"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env"
+    },
+
+    // ---------------------------------------------------------------
+    // Tests con pytest
+    // ---------------------------------------------------------------
+    {
+      "name": "Tests (pytest)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/", "-v"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "envFile": "${workspaceFolder}/.env"
+    }
+  ]
+}

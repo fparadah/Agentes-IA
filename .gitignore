@@ -23,8 +23,8 @@ data/clinica.db
 .coverage
 htmlcov/
 
-# IDE
-.vscode/
+# IDE — solo ignorar archivos personales, no la config compartida del proyecto
+.vscode/*.code-workspace
 .idea/
 *.swp
 *.swo

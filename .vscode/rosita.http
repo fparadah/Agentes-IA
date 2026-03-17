@@ -1,0 +1,137 @@
+### Probar endpoints del servidor FastAPI con REST Client (VS Code)
+### Requiere la extension: humao.rest-client
+### Iniciar servidor primero: make server  (o F5 → "Servidor FastAPI")
+
+@base = http://localhost:8000
+
+# -----------------------------------------------------------------------
+# Health check
+# -----------------------------------------------------------------------
+
+### Estado del servidor
+GET {{base}}/health
+
+
+# -----------------------------------------------------------------------
+# Webhook Meta — verificacion (GET)
+# -----------------------------------------------------------------------
+
+### Verificar token de webhook (simula lo que hace Meta al registrar el webhook)
+GET {{base}}/webhook?hub.mode=subscribe&hub.challenge=CHALLENGE_CODE_123&hub.verify_token=un-token-secreto-que-tu-eliges
+
+
+# -----------------------------------------------------------------------
+# Webhook Meta — mensajes entrantes (POST)
+# Simula lo que Meta envia cuando un paciente escribe
+# -----------------------------------------------------------------------
+
+### Paciente dice "SI" (confirmar cita)
+POST {{base}}/webhook
+Content-Type: application/json
+
+{
+  "entry": [{
+    "changes": [{
+      "value": {
+        "messages": [{
+          "from": "56922334455",
+          "id": "wamid.test001",
+          "type": "text",
+          "text": { "body": "Si, confirmo" }
+        }]
+      }
+    }]
+  }]
+}
+
+###
+
+### Paciente dice "NO" (cancelar cita)
+POST {{base}}/webhook
+Content-Type: application/json
+
+{
+  "entry": [{
+    "changes": [{
+      "value": {
+        "messages": [{
+          "from": "56944556677",
+          "id": "wamid.test002",
+          "type": "text",
+          "text": { "body": "No voy a poder ir" }
+        }]
+      }
+    }]
+  }]
+}
+
+###
+
+### Paciente quiere cambiar horario
+POST {{base}}/webhook
+Content-Type: application/json
+
+{
+  "entry": [{
+    "changes": [{
+      "value": {
+        "messages": [{
+          "from": "56955667788",
+          "id": "wamid.test003",
+          "type": "text",
+          "text": { "body": "Necesito cambiar mi hora" }
+        }]
+      }
+    }]
+  }]
+}
+
+###
+
+### Paciente hace pregunta libre (va al agente Rosita)
+POST {{base}}/webhook
+Content-Type: application/json
+
+{
+  "entry": [{
+    "changes": [{
+      "value": {
+        "messages": [{
+          "from": "56933445566",
+          "id": "wamid.test004",
+          "type": "text",
+          "text": { "body": "Hola, cuando es mi proxima cita?" }
+        }]
+      }
+    }]
+  }]
+}
+
+###
+
+### Numero desconocido
+POST {{base}}/webhook
+Content-Type: application/json
+
+{
+  "entry": [{
+    "changes": [{
+      "value": {
+        "messages": [{
+          "from": "56999999999",
+          "id": "wamid.test005",
+          "type": "text",
+          "text": { "body": "Hola" }
+        }]
+      }
+    }]
+  }]
+}
+
+
+# -----------------------------------------------------------------------
+# Admin — ejecutar scheduler manualmente
+# -----------------------------------------------------------------------
+
+### Enviar confirmaciones del dia siguiente (sin esperar el cron)
+POST {{base}}/admin/scheduler/run
